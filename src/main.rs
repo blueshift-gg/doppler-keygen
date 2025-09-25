@@ -1,13 +1,18 @@
-use solana_sdk::signature::{Keypair, Signer};
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+use solana_keypair::Keypair;
+use solana_signer::Signer as _;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::process;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::env;
 
-fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core::error::Error>> {
     // Read the keypair file
-    let json_content = std::fs::read_to_string(filepath)?;
+    let json_content = fs::read_to_string(filepath)?;
     let bytes: Vec<u8> = serde_json::from_str(&json_content)?;
 
     // Create keypair from bytes
@@ -15,7 +20,7 @@ fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>
     let pubkey_bytes = keypair.pubkey().to_bytes();
 
     println!("Public Key: {}", keypair.pubkey());
-    println!("\nPublic Key (hex): {}", hex::encode(&pubkey_bytes));
+    println!("\nPublic Key (hex): {}", hex::encode(pubkey_bytes));
     println!("\nAssembly constants (little endian):");
 
     // Split into 4 sections for assembly constants
@@ -63,24 +68,24 @@ fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>
         pubkey_bytes[31],
     ]);
 
-    println!(".equ EXPECTED_ADMIN_KEY_0, 0x{:08x}", section0);
-    println!(".equ EXPECTED_ADMIN_KEY_1, 0x{:016x}", section1);
-    println!(".equ EXPECTED_ADMIN_KEY_2, 0x{:016x}", section2);
-    println!(".equ EXPECTED_ADMIN_KEY_3, 0x{:016x}", section3);
+    println!(".equ EXPECTED_ADMIN_KEY_0, 0x{section0:08x}");
+    println!(".equ EXPECTED_ADMIN_KEY_1, 0x{section1:016x}");
+    println!(".equ EXPECTED_ADMIN_KEY_2, 0x{section2:016x}");
+    println!(".equ EXPECTED_ADMIN_KEY_3, 0x{section3:016x}");
     Ok(())
 }
 
 fn grind_keys(count: usize) {
     println!("Doppler Keygen - Grinding for keys where first 8 bytes end in 4 zero bytes...");
     println!("Pattern: ???[<0x80]00000000 (byte 3 < 0x80, bytes 4-7 must be zero)");
-    println!("Target: {} key(s)\n", count);
+    println!("Target: {count} key(s)\n");
 
-    let num_threads = std::thread::available_parallelism()
+    let num_threads = thread::available_parallelism()
         .expect("Failed to get available parallelism")
         .get();
-    println!("Using {} threads", num_threads);
+    println!("Using {num_threads} threads");
 
-    let keys_found = Arc::new(AtomicU64::new(0));
+    let keys_found = Arc::new(AtomicUsize::new(0));
     let attempts = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
 
@@ -94,7 +99,7 @@ fn grind_keys(count: usize) {
         loop {
             thread::sleep(Duration::from_secs(5));
             let current_keys = keys_found_clone.load(Ordering::Relaxed);
-            if current_keys >= count as u64 {
+            if current_keys >= count {
                 break;
             }
 
@@ -104,11 +109,7 @@ fn grind_keys(count: usize) {
             let rate = ((current_attempts - last_attempts) as f64) / elapsed;
 
             println!(
-                "Progress: {} attempts | {:.0} keys/sec | Found: {}/{}",
-                current_attempts,
-                rate,
-                current_keys,
-                count
+                "Progress: {current_attempts} attempts | {rate:.0} keys/sec | Found: {current_keys}/{count}"
             );
 
             last_attempts = current_attempts;
@@ -129,7 +130,7 @@ fn grind_keys(count: usize) {
 
                 loop {
                     // Check if we've found enough keys
-                    if keys_found.load(Ordering::Relaxed) >= count as u64 {
+                    if keys_found.load(Ordering::Relaxed) >= count {
                         break;
                     }
 
@@ -141,28 +142,28 @@ fn grind_keys(count: usize) {
                         && pubkey_bytes[4] == 0
                         && pubkey_bytes[5] == 0
                         && pubkey_bytes[6] == 0
-                        && pubkey_bytes[7] == 0 {
-
+                        && pubkey_bytes[7] == 0
+                    {
                         // Found a match!
                         let key_number = keys_found.fetch_add(1, Ordering::Relaxed) + 1;
 
                         // Check again if we haven't exceeded count
-                        if key_number > count as u64 {
+                        if key_number > count {
                             break;
                         }
 
-                        println!("\n✅ FOUND MATCHING KEYPAIR #{}/{}", key_number, count);
-                        println!("Thread: {}", thread_id);
+                        println!("\n✅ FOUND MATCHING KEYPAIR #{key_number}/{count}");
+                        println!("Thread: {thread_id}");
                         println!("Public Key: {}", hex::encode(keypair.pubkey().to_bytes()));
                         println!("Public Key (base58): {}", keypair.pubkey());
 
                         // Display the first 8 bytes in hex with byte 3 highlighted
                         print!("First 8 bytes (hex): ");
-                        for i in 0..8 {
+                        for (i, &byte) in pubkey_bytes.iter().take(8).enumerate() {
                             if i == 3 {
-                                print!("[{:02x}]", pubkey_bytes[i]);
+                                print!("[{byte:02x}]");
                             } else {
-                                print!("{:02x}", pubkey_bytes[i]);
+                                print!("{byte:02x}");
                             }
                             if i == 3 {
                                 print!(" | ");
@@ -175,19 +176,20 @@ fn grind_keys(count: usize) {
                         // Save keypair to file
                         let keypair_json = format!(
                             "[{}]",
-                            keypair.to_bytes()
+                            keypair
+                                .to_bytes()
                                 .iter()
-                                .map(|b| b.to_string())
+                                .map(std::string::ToString::to_string)
                                 .collect::<Vec<_>>()
                                 .join(",")
                         );
 
                         let filename = format!("{}.json", keypair.pubkey());
-                        std::fs::write(&filename, keypair_json).unwrap();
-                        println!("Keypair saved to: {}", filename);
+                        fs::write(&filename, keypair_json).expect("Failed to write keypair file");
+                        println!("Keypair saved to: {filename}");
 
                         // Continue looking for more keys if needed
-                        if key_number >= count as u64 {
+                        if key_number >= count {
                             break;
                         }
                     }
@@ -195,20 +197,20 @@ fn grind_keys(count: usize) {
                     local_attempts += 1;
 
                     // Update global counter periodically
-                    if local_attempts % 10000 == 0 {
-                        attempts.fetch_add(10000, Ordering::Relaxed);
+                    if local_attempts % 10_000 == 0 {
+                        attempts.fetch_add(10_000, Ordering::Relaxed);
                     }
                 }
 
                 // Add any remaining attempts
-                attempts.fetch_add(local_attempts % 10000, Ordering::Relaxed);
+                attempts.fetch_add(local_attempts % 10_000, Ordering::Relaxed);
             })
         })
         .collect();
 
     // Wait for all threads to complete
     for handle in handles {
-        handle.join().unwrap();
+        handle.join().expect("Thread panicked");
     }
 
     let elapsed = start.elapsed();
@@ -216,10 +218,13 @@ fn grind_keys(count: usize) {
     let final_keys = keys_found.load(Ordering::Relaxed);
 
     println!("\n------- Summary -------");
-    println!("Keys found: {}/{}", final_keys, count);
-    println!("Total attempts: {}", total_attempts);
+    println!("Keys found: {final_keys}/{count}");
+    println!("Total attempts: {total_attempts}");
     println!("Time elapsed: {:.2} seconds", elapsed.as_secs_f64());
-    println!("Average rate: {:.0} keys/sec", total_attempts as f64 / elapsed.as_secs_f64());
+    println!(
+        "Average rate: {:.0} keys/sec",
+        total_attempts as f64 / elapsed.as_secs_f64()
+    );
 }
 
 fn print_usage() {
@@ -238,7 +243,7 @@ fn main() {
 
     if args.len() < 2 {
         print_usage();
-        std::process::exit(1);
+        process::exit(1);
     }
 
     match args[1].as_str() {
@@ -246,7 +251,7 @@ fn main() {
             let count = if args.len() > 2 {
                 args[2].parse::<usize>().unwrap_or_else(|_| {
                     eprintln!("Error: Invalid count number");
-                    std::process::exit(1);
+                    process::exit(1);
                 })
             } else {
                 1
@@ -254,7 +259,7 @@ fn main() {
 
             if count == 0 {
                 eprintln!("Error: Count must be at least 1");
-                std::process::exit(1);
+                process::exit(1);
             }
 
             grind_keys(count);
@@ -263,21 +268,18 @@ fn main() {
             if args.len() != 3 {
                 eprintln!("Error: address command requires a keypair file");
                 eprintln!("Usage: {} address <keypair.json>", args[0]);
-                std::process::exit(1);
+                process::exit(1);
             }
 
-            match address_from_keypair(&args[2]) {
-                Ok(_) => {},
-                Err(e) => {
-                    eprintln!("Error converting keypair: {}", e);
-                    std::process::exit(1);
-                }
-            }
+            if let Err(e) = address_from_keypair(&args[2]) {
+                eprintln!("Error converting keypair: {e}");
+                process::exit(1);
+            };
         }
         _ => {
             eprintln!("Error: Unknown command '{}'\n", args[1]);
             print_usage();
-            std::process::exit(1);
+            process::exit(1);
         }
     }
 }
