@@ -27,40 +27,40 @@ fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>
         pubkey_bytes[3],
     ]);
 
-    // Second section: bytes 4-11 (64-bit)
+    // Second section: bytes 8-16 (64-bit)
     let section1 = u64::from_le_bytes([
-        pubkey_bytes[4],
-        pubkey_bytes[5],
-        pubkey_bytes[6],
-        pubkey_bytes[7],
         pubkey_bytes[8],
         pubkey_bytes[9],
         pubkey_bytes[10],
         pubkey_bytes[11],
-    ]);
-
-    // Third section: bytes 12-19 (64-bit)
-    let section2 = u64::from_le_bytes([
         pubkey_bytes[12],
         pubkey_bytes[13],
         pubkey_bytes[14],
         pubkey_bytes[15],
+    ]);
+
+    // Third section: bytes 16-24 (64-bit)
+    let section2 = u64::from_le_bytes([
         pubkey_bytes[16],
         pubkey_bytes[17],
         pubkey_bytes[18],
         pubkey_bytes[19],
-    ]);
-
-    // Fourth section: bytes 20-27 (64-bit)
-    let section3 = u64::from_le_bytes([
         pubkey_bytes[20],
         pubkey_bytes[21],
         pubkey_bytes[22],
         pubkey_bytes[23],
+    ]);
+
+    // Fourth section: bytes 24-32 (64-bit)
+    let section3 = u64::from_le_bytes([
         pubkey_bytes[24],
         pubkey_bytes[25],
         pubkey_bytes[26],
         pubkey_bytes[27],
+        pubkey_bytes[28],
+        pubkey_bytes[29],
+        pubkey_bytes[30],
+        pubkey_bytes[31],
     ]);
 
     println!(".equ EXPECTED_ADMIN_KEY_0, 0x{:08x}", section0);
