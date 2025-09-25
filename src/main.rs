@@ -1,13 +1,16 @@
-use solana_sdk::signature::{Keypair, Signer};
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+use solana_keypair::Keypair;
+use solana_signer::Signer as _;
+use std::env;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::env;
 
-fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core::error::Error>> {
     // Read the keypair file
-    let json_content = std::fs::read_to_string(filepath)?;
+    let json_content = fs::read_to_string(filepath)?;
     let bytes: Vec<u8> = serde_json::from_str(&json_content)?;
 
     // Create keypair from bytes
@@ -15,7 +18,7 @@ fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>
     let pubkey_bytes = keypair.pubkey().to_bytes();
 
     println!("Public Key: {}", keypair.pubkey());
-    println!("\nPublic Key (hex): {}", hex::encode(&pubkey_bytes));
+    println!("\nPublic Key (hex): {}", hex::encode(pubkey_bytes));
     println!("\nAssembly constants (little endian):");
 
     // Split into 4 sections for assembly constants
@@ -75,7 +78,7 @@ fn grind_keys(count: usize) {
     println!("Pattern: ???[<0x80]00000000 (byte 3 < 0x80, bytes 4-7 must be zero)");
     println!("Target: {} key(s)\n", count);
 
-    let num_threads = std::thread::available_parallelism()
+    let num_threads = thread::available_parallelism()
         .expect("Failed to get available parallelism")
         .get();
     println!("Using {} threads", num_threads);
@@ -105,10 +108,7 @@ fn grind_keys(count: usize) {
 
             println!(
                 "Progress: {} attempts | {:.0} keys/sec | Found: {}/{}",
-                current_attempts,
-                rate,
-                current_keys,
-                count
+                current_attempts, rate, current_keys, count
             );
 
             last_attempts = current_attempts;
@@ -141,8 +141,8 @@ fn grind_keys(count: usize) {
                         && pubkey_bytes[4] == 0
                         && pubkey_bytes[5] == 0
                         && pubkey_bytes[6] == 0
-                        && pubkey_bytes[7] == 0 {
-
+                        && pubkey_bytes[7] == 0
+                    {
                         // Found a match!
                         let key_number = keys_found.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -158,11 +158,11 @@ fn grind_keys(count: usize) {
 
                         // Display the first 8 bytes in hex with byte 3 highlighted
                         print!("First 8 bytes (hex): ");
-                        for i in 0..8 {
+                        for (i, &byte) in pubkey_bytes.iter().take(8).enumerate() {
                             if i == 3 {
-                                print!("[{:02x}]", pubkey_bytes[i]);
+                                print!("[{:02x}]", byte);
                             } else {
-                                print!("{:02x}", pubkey_bytes[i]);
+                                print!("{:02x}", byte);
                             }
                             if i == 3 {
                                 print!(" | ");
@@ -175,7 +175,8 @@ fn grind_keys(count: usize) {
                         // Save keypair to file
                         let keypair_json = format!(
                             "[{}]",
-                            keypair.to_bytes()
+                            keypair
+                                .to_bytes()
                                 .iter()
                                 .map(|b| b.to_string())
                                 .collect::<Vec<_>>()
@@ -183,7 +184,7 @@ fn grind_keys(count: usize) {
                         );
 
                         let filename = format!("{}.json", keypair.pubkey());
-                        std::fs::write(&filename, keypair_json).unwrap();
+                        fs::write(&filename, keypair_json).unwrap();
                         println!("Keypair saved to: {}", filename);
 
                         // Continue looking for more keys if needed
@@ -195,20 +196,20 @@ fn grind_keys(count: usize) {
                     local_attempts += 1;
 
                     // Update global counter periodically
-                    if local_attempts % 10000 == 0 {
-                        attempts.fetch_add(10000, Ordering::Relaxed);
+                    if local_attempts % 10_000 == 0 {
+                        attempts.fetch_add(10_000, Ordering::Relaxed);
                     }
                 }
 
                 // Add any remaining attempts
-                attempts.fetch_add(local_attempts % 10000, Ordering::Relaxed);
+                attempts.fetch_add(local_attempts % 10_000, Ordering::Relaxed);
             })
         })
         .collect();
 
     // Wait for all threads to complete
     for handle in handles {
-        handle.join().unwrap();
+        handle.join().expect("Thread panicked");
     }
 
     let elapsed = start.elapsed();
@@ -219,7 +220,10 @@ fn grind_keys(count: usize) {
     println!("Keys found: {}/{}", final_keys, count);
     println!("Total attempts: {}", total_attempts);
     println!("Time elapsed: {:.2} seconds", elapsed.as_secs_f64());
-    println!("Average rate: {:.0} keys/sec", total_attempts as f64 / elapsed.as_secs_f64());
+    println!(
+        "Average rate: {:.0} keys/sec",
+        total_attempts as f64 / elapsed.as_secs_f64()
+    );
 }
 
 fn print_usage() {
@@ -267,7 +271,7 @@ fn main() {
             }
 
             match address_from_keypair(&args[2]) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!("Error converting keypair: {}", e);
                     std::process::exit(1);
