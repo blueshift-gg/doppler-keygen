@@ -72,7 +72,7 @@ fn address_from_keypair(filepath: &str) -> Result<(), Box<dyn std::error::Error>
 
 fn grind_keys(count: usize) {
     println!("Doppler Keygen - Grinding for keys where first 8 bytes end in 4 zero bytes...");
-    println!("Pattern: ????????00000000 (bytes 4-7 must be zero)");
+    println!("Pattern: ???[<0x80]00000000 (byte 3 < 0x80, bytes 4-7 must be zero)");
     println!("Target: {} key(s)\n", count);
 
     let num_threads = std::thread::available_parallelism()
@@ -136,8 +136,9 @@ fn grind_keys(count: usize) {
                     let keypair = Keypair::new();
                     let pubkey_bytes = keypair.pubkey().to_bytes();
 
-                    // Check if bytes 4-7 (indices 4,5,6,7) are all zero
-                    if pubkey_bytes[4] == 0
+                    // Check if byte 3 < 0x80 and bytes 4-7 are all zero
+                    if pubkey_bytes[3] < 0x80
+                        && pubkey_bytes[4] == 0
                         && pubkey_bytes[5] == 0
                         && pubkey_bytes[6] == 0
                         && pubkey_bytes[7] == 0 {
@@ -155,17 +156,21 @@ fn grind_keys(count: usize) {
                         println!("Public Key: {}", hex::encode(keypair.pubkey().to_bytes()));
                         println!("Public Key (base58): {}", keypair.pubkey());
 
-                        // Display the first 8 bytes in hex
+                        // Display the first 8 bytes in hex with byte 3 highlighted
                         print!("First 8 bytes (hex): ");
                         for i in 0..8 {
-                            print!("{:02x}", pubkey_bytes[i]);
+                            if i == 3 {
+                                print!("[{:02x}]", pubkey_bytes[i]);
+                            } else {
+                                print!("{:02x}", pubkey_bytes[i]);
+                            }
                             if i == 3 {
                                 print!(" | ");
                             } else if i < 7 {
                                 print!(" ");
                             }
                         }
-                        println!("\n");
+                        println!(" (byte 3 = 0x{:02x} < 0x80 ✓)\n", pubkey_bytes[3]);
 
                         // Save keypair to file
                         let keypair_json = format!(
