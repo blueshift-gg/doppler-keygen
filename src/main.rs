@@ -74,11 +74,11 @@ fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core:
     for segment in 0..4 {
         if segment_is_imm32[segment] {
             // 32-bit immediate compatible - can use immediate in jne
-            println!("  ldxdw r2, [r1+{}]", segment * 8);
+            println!("  ldxdw r2, [r1+ADMIN_KEY_{}]", segment);
             println!("  jne r2, EXPECTED_ADMIN_KEY_{}, abort", segment);
         } else {
             // Regular 64-bit comparison - need to load into register first
-            println!("  ldxdw r2, [r1+{}]", segment * 8);
+            println!("  ldxdw r2, [r1+ADMIN_KEY_{}]", segment);
             println!("  lddw r3, EXPECTED_ADMIN_KEY_{}", segment);
             println!("  jne r2, r3, abort");
         }

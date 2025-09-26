@@ -66,10 +66,26 @@ doppler-keygen address keypair.json
 
 This outputs the public key in little-endian assembly constant format:
 ```asm
-.equ EXPECTED_ADMIN_KEY_0, 0xef390f15
-.equ EXPECTED_ADMIN_KEY_1, 0xabba7e83075e8fbb
-.equ EXPECTED_ADMIN_KEY_2, 0x88fc9fa7225f4ff6
-.equ EXPECTED_ADMIN_KEY_3, 0xd9900e10585ab4e2
+.equ EXPECTED_ADMIN_KEY_0, 0x683ad07a38261fb5
+.equ EXPECTED_ADMIN_KEY_1, 0xb8cd5a8f402a8499
+.equ EXPECTED_ADMIN_KEY_2, 0x819d9dac
+.equ EXPECTED_ADMIN_KEY_3, 0x8b15d101a873733c
+```
+
+It also outputs the correct assembly instructions to handle optimal key comparisons:
+
+```asm
+ldxdw r2, [r1+ADMIN_KEY_0]
+lddw r3, EXPECTED_ADMIN_KEY_0
+jne r2, r3, abort
+ldxdw r2, [r1+ADMIN_KEY_1]
+lddw r3, EXPECTED_ADMIN_KEY_1
+jne r2, r3, abort
+ldxdw r2, [r1+ADMIN_KEY_2]
+jne r2, EXPECTED_ADMIN_KEY_2, abort
+ldxdw r2, [r1+ADMIN_KEY_3]
+lddw r3, EXPECTED_ADMIN_KEY_3
+jne r2, r3, abort
 ```
 
 ## Building from Source
