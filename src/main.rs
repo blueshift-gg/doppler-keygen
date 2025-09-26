@@ -21,65 +21,79 @@ fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core:
 
     println!("Public Key: {}", keypair.pubkey());
     println!("\nPublic Key (hex): {}", hex::encode(pubkey_bytes));
-    println!("\nAssembly constants (little endian):");
 
-    // Split into 4 sections for assembly constants
-    // First section: bytes 0-3 (32-bit)
-    let section0 = u32::from_le_bytes([
-        pubkey_bytes[0],
-        pubkey_bytes[1],
-        pubkey_bytes[2],
-        pubkey_bytes[3],
-    ]);
+    // Check which segments are 32-bit immediate compatible
+    let mut segment_is_imm32 = [false; 4];
+    for segment in 0..4 {
+        let offset = segment * 8;
+        let byte3 = pubkey_bytes[offset + 3];
 
-    // Second section: bytes 8-16 (64-bit)
-    let section1 = u64::from_le_bytes([
-        pubkey_bytes[8],
-        pubkey_bytes[9],
-        pubkey_bytes[10],
-        pubkey_bytes[11],
-        pubkey_bytes[12],
-        pubkey_bytes[13],
-        pubkey_bytes[14],
-        pubkey_bytes[15],
-    ]);
+        segment_is_imm32[segment] = if byte3 & 0x80 != 0 {
+            // Negative i32 - check if bytes 4-7 are 0xFF
+            pubkey_bytes[offset + 4] == 0xFF &&
+            pubkey_bytes[offset + 5] == 0xFF &&
+            pubkey_bytes[offset + 6] == 0xFF &&
+            pubkey_bytes[offset + 7] == 0xFF
+        } else {
+            // Positive i32 - check if bytes 4-7 are 0x00
+            pubkey_bytes[offset + 4] == 0x00 &&
+            pubkey_bytes[offset + 5] == 0x00 &&
+            pubkey_bytes[offset + 6] == 0x00 &&
+            pubkey_bytes[offset + 7] == 0x00
+        };
+    }
 
-    // Third section: bytes 16-24 (64-bit)
-    let section2 = u64::from_le_bytes([
-        pubkey_bytes[16],
-        pubkey_bytes[17],
-        pubkey_bytes[18],
-        pubkey_bytes[19],
-        pubkey_bytes[20],
-        pubkey_bytes[21],
-        pubkey_bytes[22],
-        pubkey_bytes[23],
-    ]);
+    println!("\n=== Assembly Constants ===");
 
-    // Fourth section: bytes 24-32 (64-bit)
-    let section3 = u64::from_le_bytes([
-        pubkey_bytes[24],
-        pubkey_bytes[25],
-        pubkey_bytes[26],
-        pubkey_bytes[27],
-        pubkey_bytes[28],
-        pubkey_bytes[29],
-        pubkey_bytes[30],
-        pubkey_bytes[31],
-    ]);
+    // Generate constants for each segment
+    for segment in 0..4 {
+        let offset = segment * 8;
 
-    println!(".equ EXPECTED_ADMIN_KEY_0, 0x{section0:08x}");
-    println!(".equ EXPECTED_ADMIN_KEY_1, 0x{section1:016x}");
-    println!(".equ EXPECTED_ADMIN_KEY_2, 0x{section2:016x}");
-    println!(".equ EXPECTED_ADMIN_KEY_3, 0x{section3:016x}");
+        if segment_is_imm32[segment] {
+            // This segment is 32-bit immediate compatible - use truncated value
+            let i32_val = i32::from_le_bytes([
+                pubkey_bytes[offset], pubkey_bytes[offset + 1],
+                pubkey_bytes[offset + 2], pubkey_bytes[offset + 3]
+            ]);
+            println!(".equ EXPECTED_ADMIN_KEY_{}, 0x{:08x}", segment, i32_val as u32);
+        } else {
+            // Regular 64-bit segment
+            let section = u64::from_le_bytes([
+                pubkey_bytes[offset], pubkey_bytes[offset + 1],
+                pubkey_bytes[offset + 2], pubkey_bytes[offset + 3],
+                pubkey_bytes[offset + 4], pubkey_bytes[offset + 5],
+                pubkey_bytes[offset + 6], pubkey_bytes[offset + 7]
+            ]);
+            println!(".equ EXPECTED_ADMIN_KEY_{}, 0x{:016x}", segment, section);
+        }
+    }
+
+    println!("\n=== Assembly Comparison Code ===");
+
+    // Generate comparison code for each segment
+    for segment in 0..4 {
+        if segment_is_imm32[segment] {
+            // 32-bit immediate compatible - can use immediate in jne
+            println!("  ldxdw r2, [r1+{}]", segment * 8);
+            println!("  jne r2, EXPECTED_ADMIN_KEY_{}, abort", segment);
+        } else {
+            // Regular 64-bit comparison - need to load into register first
+            println!("  ldxdw r2, [r1+{}]", segment * 8);
+            println!("  lddw r3, EXPECTED_ADMIN_KEY_{}", segment);
+            println!("  jne r2, r3, abort");
+        }
+        println!();
+    }
+
     Ok(())
 }
 
 fn grind_keys(count: usize) {
     println!("Doppler Keygen - Mining for 32-bit immediate value compatible keys...");
-    println!("Pattern: Auto-detect based on bit 31:");
-    println!("  - If bit 31 clear: bytes 4-7 must be 0x00 (positive i32)");
-    println!("  - If bit 31 set:   bytes 4-7 must be 0xFF (negative i32, sign-extended)");
+    println!("Pattern: Checking all 4 segments (bytes 0-7, 8-15, 16-23, 24-31)");
+    println!("Each segment must form a valid 32-bit immediate with sign extension:");
+    println!("  - If bit 31 clear: bytes 4-7 of segment must be 0x00 (positive i32)");
+    println!("  - If bit 31 set:   bytes 4-7 of segment must be 0xFF (negative i32)");
     println!("Target: {} key(s)\n", count);
 
     let num_threads = thread::available_parallelism()
@@ -139,23 +153,34 @@ fn grind_keys(count: usize) {
                     let keypair = Keypair::new();
                     let pubkey_bytes = keypair.pubkey().to_bytes();
 
-                    // Check if first 8 bytes form a valid 32-bit immediate value pattern
-                    // For proper sign extension from i32 to i64:
-                    // - If bit 31 is set (byte 3 >= 0x80): negative value, bytes 4-7 must be 0xFF
-                    // - If bit 31 is clear (byte 3 < 0x80): positive value, bytes 4-7 must be 0x00
-                    let matches = if pubkey_bytes[3] & 0x80 != 0 {
-                        // Bit 31 is set - this is a negative i32
-                        // For sign extension compatibility, bytes 4-7 must all be 0xFF
-                        pubkey_bytes[4] == 0xFF && pubkey_bytes[5] == 0xFF &&
-                        pubkey_bytes[6] == 0xFF && pubkey_bytes[7] == 0xFF
-                    } else {
-                        // Bit 31 is clear - this is a positive i32
-                        // For sign extension compatibility, bytes 4-7 must all be 0x00
-                        pubkey_bytes[4] == 0x00 && pubkey_bytes[5] == 0x00 &&
-                        pubkey_bytes[6] == 0x00 && pubkey_bytes[7] == 0x00
-                    };
+                    // Check all 4 segments of the 32-byte key for valid 32-bit immediate patterns
+                    let mut matched_segment = None;
 
-                    if matches {
+                    for segment in 0..4 {
+                        let offset = segment * 8;
+                        let byte3 = pubkey_bytes[offset + 3];
+
+                        let segment_matches = if byte3 & 0x80 != 0 {
+                            // Bit 31 is set - negative i32, bytes 4-7 of segment must be 0xFF
+                            pubkey_bytes[offset + 4] == 0xFF &&
+                            pubkey_bytes[offset + 5] == 0xFF &&
+                            pubkey_bytes[offset + 6] == 0xFF &&
+                            pubkey_bytes[offset + 7] == 0xFF
+                        } else {
+                            // Bit 31 is clear - positive i32, bytes 4-7 of segment must be 0x00
+                            pubkey_bytes[offset + 4] == 0x00 &&
+                            pubkey_bytes[offset + 5] == 0x00 &&
+                            pubkey_bytes[offset + 6] == 0x00 &&
+                            pubkey_bytes[offset + 7] == 0x00
+                        };
+
+                        if segment_matches {
+                            matched_segment = Some(segment);
+                            break;  // Found a match, no need to check other segments
+                        }
+                    }
+
+                    if let Some(segment) = matched_segment {
 
                         // Found a match!
                         let key_number = keys_found.fetch_add(1, Ordering::Relaxed) + 1;
@@ -170,16 +195,21 @@ fn grind_keys(count: usize) {
                         println!("Public Key: {}", hex::encode(keypair.pubkey().to_bytes()));
                         println!("Public Key (base58): {}", keypair.pubkey());
 
-                        // Extract and display the i32 value (little-endian)
+                        // Display which segment matched
+                        let offset = segment * 8;
+                        println!("Matched Segment: {} (bytes {}-{})", segment, offset, offset + 7);
+
+                        // Extract and display the i32 value from the matched segment
                         let i32_value = i32::from_le_bytes([
-                            pubkey_bytes[0], pubkey_bytes[1], pubkey_bytes[2], pubkey_bytes[3]
+                            pubkey_bytes[offset], pubkey_bytes[offset + 1],
+                            pubkey_bytes[offset + 2], pubkey_bytes[offset + 3]
                         ]);
                         let i64_value = i32_value as i64;
 
-                        // Display the first 8 bytes in hex
-                        print!("First 8 bytes (hex): ");
+                        // Display the matched segment bytes in hex
+                        print!("Segment {} bytes (hex): ", segment);
                         for i in 0..8 {
-                            print!("{:02x}", pubkey_bytes[i]);
+                            print!("{:02x}", pubkey_bytes[offset + i]);
                             if i == 3 {
                                 print!(" | ");
                             } else if i < 7 {
