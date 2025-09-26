@@ -76,9 +76,11 @@ fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core:
 }
 
 fn grind_keys(count: usize) {
-    println!("Doppler Keygen - Grinding for keys where first 8 bytes end in 4 zero bytes...");
-    println!("Pattern: ???[<0x80]00000000 (byte 3 < 0x80, bytes 4-7 must be zero)");
-    println!("Target: {count} key(s)\n");
+    println!("Doppler Keygen - Mining for 32-bit immediate value compatible keys...");
+    println!("Pattern: Auto-detect based on bit 31:");
+    println!("  - If bit 31 clear: bytes 4-7 must be 0x00 (positive i32)");
+    println!("  - If bit 31 set:   bytes 4-7 must be 0xFF (negative i32, sign-extended)");
+    println!("Target: {} key(s)\n", count);
 
     let num_threads = thread::available_parallelism()
         .expect("Failed to get available parallelism")
@@ -137,13 +139,24 @@ fn grind_keys(count: usize) {
                     let keypair = Keypair::new();
                     let pubkey_bytes = keypair.pubkey().to_bytes();
 
-                    // Check if byte 3 < 0x80 and bytes 4-7 are all zero
-                    if pubkey_bytes[3] < 0x80
-                        && pubkey_bytes[4] == 0
-                        && pubkey_bytes[5] == 0
-                        && pubkey_bytes[6] == 0
-                        && pubkey_bytes[7] == 0
-                    {
+                    // Check if first 8 bytes form a valid 32-bit immediate value pattern
+                    // For proper sign extension from i32 to i64:
+                    // - If bit 31 is set (byte 3 >= 0x80): negative value, bytes 4-7 must be 0xFF
+                    // - If bit 31 is clear (byte 3 < 0x80): positive value, bytes 4-7 must be 0x00
+                    let matches = if pubkey_bytes[3] & 0x80 != 0 {
+                        // Bit 31 is set - this is a negative i32
+                        // For sign extension compatibility, bytes 4-7 must all be 0xFF
+                        pubkey_bytes[4] == 0xFF && pubkey_bytes[5] == 0xFF &&
+                        pubkey_bytes[6] == 0xFF && pubkey_bytes[7] == 0xFF
+                    } else {
+                        // Bit 31 is clear - this is a positive i32
+                        // For sign extension compatibility, bytes 4-7 must all be 0x00
+                        pubkey_bytes[4] == 0x00 && pubkey_bytes[5] == 0x00 &&
+                        pubkey_bytes[6] == 0x00 && pubkey_bytes[7] == 0x00
+                    };
+
+                    if matches {
+
                         // Found a match!
                         let key_number = keys_found.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -157,21 +170,26 @@ fn grind_keys(count: usize) {
                         println!("Public Key: {}", hex::encode(keypair.pubkey().to_bytes()));
                         println!("Public Key (base58): {}", keypair.pubkey());
 
-                        // Display the first 8 bytes in hex with byte 3 highlighted
+                        // Extract and display the i32 value (little-endian)
+                        let i32_value = i32::from_le_bytes([
+                            pubkey_bytes[0], pubkey_bytes[1], pubkey_bytes[2], pubkey_bytes[3]
+                        ]);
+                        let i64_value = i32_value as i64;
+
+                        // Display the first 8 bytes in hex
                         print!("First 8 bytes (hex): ");
-                        for (i, &byte) in pubkey_bytes.iter().take(8).enumerate() {
-                            if i == 3 {
-                                print!("[{byte:02x}]");
-                            } else {
-                                print!("{byte:02x}");
-                            }
+                        for i in 0..8 {
+                            print!("{:02x}", pubkey_bytes[i]);
                             if i == 3 {
                                 print!(" | ");
                             } else if i < 7 {
                                 print!(" ");
                             }
                         }
-                        println!(" (byte 3 = 0x{:02x} < 0x80 ✓)\n", pubkey_bytes[3]);
+                        println!();
+                        println!("  i32 value: {} (0x{:08x})", i32_value, i32_value as u32);
+                        println!("  i64 value: {} (0x{:016x})", i64_value, i64_value as u64);
+                        println!();
 
                         // Save keypair to file
                         let keypair_json = format!(
@@ -230,11 +248,15 @@ fn grind_keys(count: usize) {
 fn print_usage() {
     println!("Doppler Keygen - Solana vanity key generator\n");
     println!("Usage:");
-    println!("  doppler-keygen grind [count]    - Grind for vanity keys (default: 1 key)");
+    println!("  doppler-keygen grind [count]    - Grind for vanity keys (default: 1)");
     println!("  doppler-keygen address <file>   - Convert keypair to assembly constants");
+    println!("\nGrind pattern:");
+    println!("  Searches for keys where the first 8 bytes form a valid 32-bit immediate value:");
+    println!("  • If bit 31 = 0: bytes 4-7 must be 0x00 (positive i32)");
+    println!("  • If bit 31 = 1: bytes 4-7 must be 0xFF (negative i32, sign-extended)");
     println!("\nExamples:");
-    println!("  doppler-keygen grind            - Find 1 vanity key");
-    println!("  doppler-keygen grind 5          - Find 5 vanity keys");
+    println!("  doppler-keygen grind         - Find 1 key");
+    println!("  doppler-keygen grind 5       - Find 5 keys");
     println!("  doppler-keygen address key.json - Convert key.json to assembly format");
 }
 
