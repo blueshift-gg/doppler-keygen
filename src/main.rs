@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod vanity;
+
 fn address_from_keypair<P: AsRef<Path>>(filepath: P) -> Result<(), Box<dyn core::error::Error>> {
     // Read the keypair file
     let json_content = fs::read_to_string(filepath)?;
@@ -275,19 +277,38 @@ fn grind_keys(count: usize) {
     );
 }
 
+
 fn print_usage() {
     println!("Doppler Keygen - Solana vanity key generator\n");
     println!("Usage:");
-    println!("  doppler-keygen grind [count]    - Grind for vanity keys (default: 1)");
-    println!("  doppler-keygen address <file>   - Convert keypair to assembly constants");
-    println!("\nGrind pattern:");
-    println!("  Searches for keys where the first 8 bytes form a valid 32-bit immediate value:");
+    println!("  doppler-keygen grind [count]            - Grind for 32-bit immediate compatible keys");
+    println!("  doppler-keygen vanity <pattern> [count] - Generate vanity keys with custom patterns");
+    println!("  doppler-keygen batch <pat1:cnt1> [pat2:cnt2] - Batch process multiple patterns");
+    println!("  doppler-keygen address <file>          - Convert keypair to assembly constants");
+    println!("\nVanity patterns:");
+    println!("  prefix:abc123     - Match 'abc123' at the start of the key");
+    println!("  suffix:deadbeef   - Match 'deadbeef' at the end of the key");
+    println!("  contains:cafe     - Match 'cafe' anywhere in the key");
+    println!("  at:8:babe        - Match 'babe' starting at byte position 8");
+    println!("  abc123           - Default: match at the start (same as prefix:abc123)");
+    println!("\nBatch patterns (pattern:count):");
+    println!("  abc:1            - Find 1 key starting with 'abc'");
+    println!("  prefix:dead:2    - Find 2 keys starting with 'dead'");
+    println!("  suffix:beef:3    - Find 3 keys ending with 'beef'");
+    println!("  at:8:pattern:1   - Find 1 key with 'pattern' at position 8");
+    println!("\nGrind pattern (32-bit immediate):");
+    println!("  Searches for keys where any 8-byte segment forms a valid 32-bit immediate:");
     println!("  • If bit 31 = 0: bytes 4-7 must be 0x00 (positive i32)");
     println!("  • If bit 31 = 1: bytes 4-7 must be 0xFF (negative i32, sign-extended)");
     println!("\nExamples:");
-    println!("  doppler-keygen grind         - Find 1 key");
-    println!("  doppler-keygen grind 5       - Find 5 keys");
-    println!("  doppler-keygen address key.json - Convert key.json to assembly format");
+    println!("  doppler-keygen grind              - Find 1 key with 32-bit immediate pattern");
+    println!("  doppler-keygen grind 5            - Find 5 keys with 32-bit immediate pattern");
+    println!("  doppler-keygen vanity abc123      - Find 1 key starting with 'abc123'");
+    println!("  doppler-keygen vanity prefix:dead - Find 1 key starting with 'dead'");
+    println!("  doppler-keygen vanity suffix:beef 3 - Find 3 keys ending with 'beef'");
+    println!("  doppler-keygen batch abc:1 te:1   - Find 1 'abc' and 1 'te' key");
+    println!("  doppler-keygen batch sol:2 web:1  - Find 2 'sol' and 1 'web' key");
+    println!("  doppler-keygen address key.json   - Convert key.json to assembly format");
 }
 
 fn main() {
@@ -315,6 +336,111 @@ fn main() {
             }
 
             grind_keys(count);
+        }
+        "vanity" => {
+            if args.len() < 3 {
+                eprintln!("Error: vanity command requires a pattern");
+                eprintln!("Usage: {} vanity <pattern> [count]", args[0]);
+                process::exit(1);
+            }
+
+            let pattern = &args[2];
+            let count = if args.len() > 3 {
+                args[3].parse::<usize>().unwrap_or_else(|_| {
+                    eprintln!("Error: Invalid count number");
+                    process::exit(1);
+                })
+            } else {
+                1
+            };
+
+            if count == 0 {
+                eprintln!("Error: Count must be at least 1");
+                process::exit(1);
+            }
+
+            // Check for position argument (at:pos:pattern format)
+            let position = if pattern.starts_with("at:") {
+                let parts: Vec<&str> = pattern[3..].split(':').collect();
+                if parts.len() == 2 {
+                    let pos: usize = parts[0].parse().unwrap_or(0);
+                    Some(pos)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            vanity::vanity_keys(pattern, count, position);
+        }
+        "batch" => {
+            if args.len() < 3 {
+                eprintln!("Error: batch command requires patterns");
+                eprintln!("Usage: {} batch <pattern1:count1> [pattern2:count2] ...", args[0]);
+                process::exit(1);
+            }
+
+            let mut batch_patterns = Vec::new();
+
+            for pattern_arg in &args[2..] {
+                let parts: Vec<&str> = pattern_arg.split(':').collect();
+                if parts.len() != 2 {
+                    eprintln!("Error: Invalid batch pattern format: {}", pattern_arg);
+                    eprintln!("Use: pattern:count (e.g., abc:1, prefix:dead:2)");
+                    process::exit(1);
+                }
+
+                let pattern_str = parts[0];
+                let count: usize = parts[1].parse().unwrap_or_else(|_| {
+                    eprintln!("Error: Invalid count in pattern: {}", pattern_arg);
+                    process::exit(1);
+                });
+
+                if count == 0 {
+                    eprintln!("Error: Count must be at least 1 for pattern: {}", pattern_arg);
+                    process::exit(1);
+                }
+
+                // Check for position argument (at:pos:pattern format)
+                let position = if pattern_str.starts_with("at:") {
+                    let subparts: Vec<&str> = pattern_str[3..].split(':').collect();
+                    if subparts.len() == 2 {
+                        let pos: usize = subparts[0].parse().unwrap_or(0);
+                        let actual_pattern = subparts[1];
+                        match vanity::BatchPattern::new(actual_pattern, Some(pos), count) {
+                            Ok(bp) => {
+                                batch_patterns.push(bp);
+                                continue;
+                            }
+                            Err(e) => {
+                                eprintln!("Error parsing pattern '{}': {}", pattern_arg, e);
+                                process::exit(1);
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                match vanity::BatchPattern::new(pattern_str, position, count) {
+                    Ok(bp) => batch_patterns.push(bp),
+                    Err(e) => {
+                        eprintln!("Error parsing pattern '{}': {}", pattern_arg, e);
+                        process::exit(1);
+                    }
+                }
+            }
+
+            if batch_patterns.is_empty() {
+                eprintln!("Error: No valid patterns specified");
+                process::exit(1);
+            }
+
+            let mut batch_patterns_array: Vec<vanity::BatchPattern> = batch_patterns.into_iter().collect();
+            vanity::vanity_keys_batch(&mut batch_patterns_array);
         }
         "address" => {
             if args.len() != 3 {
